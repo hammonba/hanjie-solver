@@ -11,41 +11,6 @@
           0
           c))
 
-#_(defn single-ed
-  [r c]
-  (if (zero? c)
-    (map vector (range r))
-    (mapcat (fn [o] (map (fn [i] (conj o i))
-                      (range r)))
-         (single-ed r (dec c)))))
-
-#_(defn cmb-conj
-  "return conjoining of outer with every element of inner "
-  [outer inner]
-  (map #(conj outer %) inner))
-
-#_(defn permutate
-  "returns every element in r permuted c times"
-  [r c]
-  (if (zero? c)
-    (repeat (count r) (list))
-    (eduction
-      (mapcat #(cmb-conj % r))
-      (permutate r (dec c)))))
-
-#_(defn combinate
-  "returns elements of r combinated c times"
-  [r c]
-  (if (zero? c)
-    '(())
-    (eduction
-      (map #(cmb-conj % r))
-      cat
-      (map sort)
-      (distinct)
-      (combinate r (dec c)))))
-
-
 (def other-type
   {:on :off
    :off :on})
@@ -59,64 +24,6 @@
                 false))
             false
             pxs)))
-
-#_(defn alloc-remaining
-  [buckets beans]
-  (if (zero? buckets)
-    (list (list beans))
-    (mapcat
-      (fn [alloc-now]
-        (map conj (alloc-remaining (dec buckets) (- beans alloc-now))
-             (repeat alloc-now)))
-      (range (inc beans)))))
-
-#_(defn alloc-remaining2
-  [buckets beans]
-  (if (zero? buckets)
-    (list (list beans))
-    (eduction
-      (mapcat
-        (fn [alloc-now]
-          (map conj
-               (alloc-remaining2 (dec buckets)
-                                 (- beans alloc-now))
-               (repeat alloc-now))))
-      (range (inc beans)))))
-
-(defn alloc-remaining3
-  [known-pixels offset block-sizes to-alloc]
-  (if (empty? block-sizes)
-    (do
-      (list (list to-alloc)))
-    (eduction
-      (mapcat
-        (fn [alloc-here]
-          (let [gap-start offset
-                gap-end (let [ge (+ gap-start alloc-here)]
-                          (if (zero? offset)
-                            ge
-                            (+ ge 1)))
-                block-start gap-end
-                block-end (+ block-start (first block-sizes))]
-            (when-not (or (is-contradicted?
-                            :off
-                            (subvec known-pixels gap-start gap-end))
-                          (is-contradicted?
-                            :on
-                            (subvec known-pixels block-start block-end)))
-              (map conj
-                   (alloc-remaining3 known-pixels
-                                     block-end
-                                     (rest block-sizes)
-                                     (- to-alloc alloc-here))
-                   (repeat alloc-here))))))
-      (range (inc to-alloc)))))
-
-#_(defn apply-alloc-to-bucket
-  [init-vec alloc]
-  (eduction
-    (map #(mapv + init-vec %))
-    alloc))
 
 (defn apply-combination-to-bucket
   [init-vec c]
@@ -140,11 +47,7 @@
         init-vec (build-bucket-initvec (dec blocks-count))]
     (eduction
       (map #(mapv + init-vec %))
-      #_(alloc-remaining2 blocks-count spare)
-      (alloc-remaining3 known-pixels 0 blocks spare))
-    #_(eduction
-      (map #(apply-combination-to-bucket init-vec %))
-      (combinate (range (inc count)) spare))))
+      (alloc-remaining3 known-pixels 0 blocks spare))))
 
 (defn split-pixels
   "splits the pixels collection into blocksizes"
@@ -223,6 +126,26 @@
     (infer-pixels known-pixels
                   (gen-combined-blocks width line-rule known-pixels))))
 
+(defn infer-nth-line
+  [n width block-rules known-pixels]
+  (let [line-pxs (nth known-pixels n)
+        line-rules (nth block-rules n)
+        line-pxs2 (infer-pixels line-pxs
+                                (gen-combined-blocks width line-rules line-pxs))]
+    (when (not= line-pxs line-pxs2)
+      (assoc known-pixels n line-pxs2))))
+
+(defn find-infer-nth-line
+  [width block-rules known-pixels]
+  (some #(infer-nth-line % width block-rules known-pixels) (range width)))
+
+(defn find-infer-next
+  [{:keys [across known-across down known-down] :as state}]
+   (or (when-let [known-across2 (find-infer-nth-line (count down) across known-across)]
+         (assoc state :known-across known-across2))
+       (when-let [known-down2 (find-infer-nth-line (count across) down known-down)]
+         (assoc state :known-down known-down2))))
+
 (defn infer-step
   [width block-rules known-pixels]
   (mapv (infer-line width)
@@ -235,13 +158,17 @@
              known-pixels
              block-rules)))
 
+(defn infer-step2
+  [{:keys [across known-across down known-down] :as state}]
+  (assoc state :known-down (par-infer-step (count known-across) down known-down)
+               :known-across (par-infer-step (count known-down) across known-across)))
+
 (defn count-unknowns
   [pixels]
   (reduce
     (fn [c v] (if (= :unk v) v (inc v)))
     0
-    pixels)
-  #_(count (remove #(= :unk %) pixels)))
+    pixels))
 
 (defn calc-score
   [w px b]
@@ -307,10 +234,6 @@
   {:on \O
    :off \space
    :unk \?})
-
-#_(defn pprint-line
-  [l]
-  (clojure.string/join (map pprint-lookup l)))
 
 (defn pprint-solution
   [mtx]
