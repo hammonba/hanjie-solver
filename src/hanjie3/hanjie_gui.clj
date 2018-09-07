@@ -37,35 +37,35 @@
           :down [:down :known-down :ratio-down :across :known-across])
         update-index (or update-index 0)
         r ((hanjie3.core/infer-line-ratio (count (get state kw-width)))
-            (nth (get state kw-known-px) update-index)
-            (nth (get state kw-linerule) update-index))
+           (nth (get state kw-known-px) update-index)
+           (nth (get state kw-linerule) update-index))
         b (hanjie3.core/ratio2binary-vec r)
         #_(hanjie3.core/soft-combine-pixels
                 (hanjie3.core/ratio2binary-vec r)
                 (mapv #(nth % update-index) (get state kw-cross-px)))
         end? (= (dec (count (get state kw-known-px))) update-index)
         next-update-index (if end? 0 (inc update-index))
-        next-update-dir (if end? (rot-update-dir update-dir) (or update-dir :across))
-        ]
+        next-update-dir (if end? (rot-update-dir update-dir) (or update-dir :across))]
+
     (log/infof "update-index=%s b=%d" b update-index)
     (-> state
         (update kw-known-px assoc update-index b)
         (update kw-ratio assoc update-index r)
         (assoc :update-index next-update-index
                :update-dir next-update-dir)
-        hanjie3.core/apply-cross-step))
-  )
+        hanjie3.core/apply-cross-step)))
+
 
 #_(defn update-state [{:keys [next-task] :as state}]
-  (condp = next-task
-    :stalled state
-    :cross (if-let [s2 (hanjie3.core/apply-cross-step state)]
-             (assoc s2 :next-task :infer)
-             (assoc state :next-task :stalled))
-    (if-let [s2 (hanjie3.core/infer-step2 state)
-             #_(hanjie3.core/find-infer-next state)]
-      (assoc s2  :next-task :cross)
-      (assoc state :next-task :stalled))))
+   (condp = next-task
+     :stalled state
+     :cross (if-let [s2 (hanjie3.core/apply-cross-step state)]
+              (assoc s2 :next-task :infer)
+              (assoc state :next-task :stalled))
+     (if-let [s2 (hanjie3.core/infer-step2 state)
+              #_(hanjie3.core/find-infer-next state)]
+       (assoc s2  :next-task :cross)
+       (assoc state :next-task :stalled))))
 
 (defn draw-state-ratio [{:keys [width height cell-size ratio-down ratio-across] :as state}]
   ; Clear the sketch by filling it with light-grey color.
@@ -110,11 +110,11 @@
       (q/with-translation [(/ (q/width) 2)
                            (/ (q/height) 2)]
                           ; Draw the circle.
-                          (q/ellipse x y 100 100)))
+                          (q/ellipse x y 100 100))))
 
 
 
-  )
+
 (defn draw-state [{:keys [width height cell-size known-down] :as state}]
   ; Clear the sketch by filling it with light-grey color.
   (q/background 240)
@@ -146,11 +146,11 @@
       (q/with-translation [(/ (q/width) 2)
                            (/ (q/height) 2)]
                           ; Draw the circle.
-                          (q/ellipse x y 100 100)))
+                          (q/ellipse x y 100 100))))
 
 
 
-  )
+
 
 (defn compute-statesize
   [state]
@@ -172,8 +172,8 @@
         row (int (/ y (:cell-size state)))]
     (-> state
         (update-in [:known-down row col] cell-rot)
-        (update-in [:known-across col row] cell-rot)
-        )))
+        (update-in [:known-across col row] cell-rot))))
+
 
 (defn sketch-hanjie
   [state]

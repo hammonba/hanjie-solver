@@ -26,27 +26,27 @@
             pxs)))
 
 #_(defn alloc-remaining
-  [buckets beans]
-  (if (zero? buckets)
-    (list (list beans))
-    (mapcat
-      (fn [alloc-now]
-        (map conj (alloc-remaining (dec buckets) (- beans alloc-now))
-             (repeat alloc-now)))
-      (range (inc beans)))))
+   [buckets beans]
+   (if (zero? buckets)
+     (list (list beans))
+     (mapcat
+       (fn [alloc-now]
+         (map conj (alloc-remaining (dec buckets) (- beans alloc-now))
+              (repeat alloc-now)))
+       (range (inc beans)))))
 
 #_(defn alloc-remaining2
-  [buckets beans]
-  (if (zero? buckets)
-    (list (list beans))
-    (eduction
-      (mapcat
-        (fn [alloc-now]
-          (map conj
-               (alloc-remaining2 (dec buckets)
-                                 (- beans alloc-now))
-               (repeat alloc-now))))
-      (range (inc beans)))))
+   [buckets beans]
+   (if (zero? buckets)
+     (list (list beans))
+     (eduction
+       (mapcat
+         (fn [alloc-now]
+           (map conj
+                (alloc-remaining2 (dec buckets)
+                                  (- beans alloc-now))
+                (repeat alloc-now))))
+       (range (inc beans)))))
 
 (defn alloc-remaining3
   [known-pixels offset block-sizes to-alloc]
@@ -77,10 +77,10 @@
       (range (inc to-alloc)))))
 
 #_(defn apply-alloc-to-bucket
-  [init-vec alloc]
-  (eduction
-    (map #(mapv + init-vec %))
-    alloc))
+   [init-vec alloc]
+   (eduction
+     (map #(mapv + init-vec %))
+     alloc))
 
 (defn apply-combination-to-bucket
   [init-vec c]
@@ -195,8 +195,19 @@
   (let [allocated (reduce + (dec (count blocks)) blocks)
         leftover (- width allocated)]
     (eduction
-      (map #(interleave % (conj blocks nil)))
-      (allocate-buckets blocks leftover known-pixels))))
+     (map #(interleave % (conj blocks nil)))
+     (allocate-buckets blocks leftover known-pixels))))
+
+(defn fj-infer-line
+  [width known-pixels line-rule]
+  (reduce
+   (fn [cp g]
+     (combine-pixels cp (@#'r/fjjoin g)))
+   (soften-unk known-pixels)
+   (seque
+    (map (fn [b]
+           (@#'r/fjfork (r/fjtask (fn [] (gen-pixels known-pixels b)))))
+         (gen-combined-blocks width line-rule known-pixels)))))
 
   
 (defn infer-line
@@ -228,10 +239,10 @@
 
 (defn find-infer-next
   [{:keys [across known-across down known-down] :as state}]
-   (or (when-let [known-across2 (find-infer-nth-line (count down) across known-across)]
-         (assoc state :known-across known-across2))
-       (when-let [known-down2 (find-infer-nth-line (count across) down known-down)]
-         (assoc state :known-down known-down2))))
+  (or (when-let [known-across2 (find-infer-nth-line (count down) across known-across)]
+        (assoc state :known-across known-across2))
+      (when-let [known-down2 (find-infer-nth-line (count across) down known-down)]
+        (assoc state :known-down known-down2))))
 
 (defn infer-step
   [width block-rules known-pixels]
@@ -250,10 +261,20 @@
   (vec (pmap (infer-line width)
              known-pixels
              block-rules)))
+
+(defn fj-infer-step
+  [width block-rules known-pixels]
+  (into []
+        (map @#'r/fjjoin)
+        (map (fn [k b] (@#'r/fjfork
+                        (r/fjtask (fn [] (fj-infer-line width k b)))))
+             known-pixels
+             block-rules)))
+
 #_(def p5 (nth (iterate one-step peter) 4))
 #_((infer-line-ratio (count (:down p5)))
-  (nth (:known-across p5) 23)
-  (nth (:across p5) 23))
+   (nth (:known-across p5) 23)
+   (nth (:across p5) 23))
 
 #_(infer-step-ratio (count (:down p5))
                 (:across p5)
@@ -302,10 +323,20 @@
 (defn apply-infer-step
   [{:keys [known-across across known-down down] :as args}]
   (assoc args
-    :known-across (par-infer-step (count down)
+    :known-across (infer-step (count down)
                               across
                               known-across)
-    :known-down (par-infer-step (count across)
+    :known-down (infer-step (count across)
+                            down
+                            known-down)))
+
+(defn fj-apply-infer-step
+  [{:keys [known-across across known-down down] :as args}]
+  (assoc args
+    :known-across (fj-infer-step (count down)
+                              across
+                              known-across)
+    :known-down (fj-infer-step (count across)
                             down
                             known-down)))
 
@@ -358,7 +389,7 @@
     :known-across (cross-step known-across known-down)
     :known-down (cross-step known-down known-across)))
 
-(def one-step (comp apply-cross-step apply-infer-step))
+(def one-step (comp apply-cross-step fj-apply-infer-step))
 (def one-step-ratio (comp apply-cross-step apply-ratio-step))
 (defn isfinished? [[p q]]
   (= (:ratio-across p) (:ratio-across q)))
@@ -366,7 +397,8 @@
 (def pprint-lookup
   {:on \O
    :off \space
-   :unk \?})
+   :unk \?
+   :contradiction \X})
 
 (defn pprint-solution
   [mtx]
@@ -396,166 +428,6 @@
            :ratio-across (build-init-known 1/2 across down)
            :known-down (build-init-known :unk down across)
            :ratio-down (build-init-known 1/2 down across)))
-
-(def trivial-change "just for testing. again")
-
-(def umbrella (initialise-known
-                {:title        "umbrella"
-                 :origin       "http://www.hanjie.co.uk/hanjie1.php"
-                 :across       [[1] [3] [3] [5 3] [5 2] [7 1] [6 2] [14] [6] [7] [5] [5] [3] [3] [1]]
-                 :down         [[1] [5] [7] [9] [11] [13] [15] [1 1 1 1 1 1 1] [1] [1] [1] [1 1] [1 1] [2 2] [3]]}))
-
-(def april27 (initialise-known
-               {:title  "27 april"
-                :origin "http://www.hanjie-star.com/picross/27-april-20118.html"
-                :across [[3 1] [2 1] [2 1 1] [2 2 1] [2 2 2 1]
-                         [2 8 1] [2 9 1] [3 10 3 1] [13 10] [25]
-                         [2 13 2 1] [3 5 3 1] [2 3 3 1] [2 3 2 1] [2 2 1]
-                         [2 2 1] [2 1 1] [2 1] [2 1] [1 1]
-                         [1 1] [1] [1] [1] [1]]
-                :down   [[4 4] [4 4] [3 4] [7] [7]
-                         [8] [4 4] [3 4] [2 4] [1 9]
-                         [1 13] [15] [7] [3 3] [3 2]
-                         [3 3] [5] [4] [4] [4]
-                         [2 2] [2 3] [2 2] [2] [25]]}))
-
-(def village (initialise-known
-               {:title  "little village under the sky"
-                :origin "http://www.hanjie-star.com/picross/little-village-under-the-sky-20312.html"
-                :across [[2 1 1 1] [1 2 7 2] [2 1 4 1 1] [2 1 5 1] [1 2 2 1 1]
-                         [1 2 2 1 2] [1 2 2 1 1] [1 3 3 1] [2 4 1 2] [2 3 1 2 2]
-                         [2 3 1 1 3 1] [2 4 1 1 2 2] [2 2 2 1 1 4] [1 2 2 1 5] [1 3 1 4]
-                         [1 3 1 1 2] [2 2 3 1 1 3] [1 2 1 3 4 3] [2 2 2 2 1 2 1 2] [2 1 2 1 1 3]
-                         [2 1 2 1 2 2 1] [3 1 1 4 4] [4 2 3 2 1] [3 2 2 2 1] [1 1 1 4]]
-                :down   [[9 3 4] [4 5 7] [1 1 2 4] [3 2] [1 6]
-                         [2] [2 5 1 3] [15 6] [9 7] [1 4]
-                         [4 5] [3 4] [3 4] [1 6] [1]
-                         [3] [3 2 5] [1 1 7 9] [1 4 1 1 1 1] [2 5 1 10]
-                         [1 1 3 1] [7 6 1] [3 3] [1 1 2 8] [3 13]]}))
-
-(def hedwig (initialise-known
-              {:title "hedwig"
-               :origin "http://www.hanjie-star.com/picross/hedwig-harry-potter--20515.html"
-               :across [[6] [2 1 4 7] [1 1 1 2 2 1] [2 1 1 3 1 1 1] [1 1 1 5 1 1]
-                        [1 1 3 1 1] [1 2 1 2 3 3] [1 2 2 1 1] [1 1 1 2 1 2 1 1] [1 1 1 3 3 1]
-                        [2 1 1 2 3 1] [1 1 2 2 1 6] [2 3 2 1] [3 1 3 1] [2 3 1]
-                        [2 2 2] [2 1 2] [2 2 1] [4] [2]
-                        [1] [0] [0] [0] [0]]
-               :down [[8] [2 2] [1 1] [1 1] [1 1]
-                      [4 3 1] [1 1 1 1] [1 1 1] [1 1 2] [2 6]
-                      [2 1 2] [1 1 3 2] [1 1 2 2] [2 1 2 2] [2 2 3 3]
-                      [2 5 3] [1 1 1 7] [4 2 3] [10 1] [2 2 4 3]
-                      [1 1 1 6] [1 1 1 1] [1 3 1] [1 1 1] [11]]}))
-(def inuyasha (initialise-known
-                {:title  "inuyasha"
-                 :origin "http://www.hanjie-star.com/picross/inuyasha-sesshoumaru-20535.html"
-                 :across [[4 2] [2 5 1 4] [1 3 4 2] [2 8 2] [2 11 7]
-                          [1 1 1 1 3 2 2] [1 4 2 1 1 5] [2 3 7] [2 3 2 1 7] [2 1 1 1 2 2]
-                          [2 1 1 1 1 1] [5 1 2 1 1] [1 2 2 1 1 1 2 2] [1 2 1 2 1 1 2 3] [2 3 1 12 1]
-                          [2 9 2 2] [6 1 1 8] [1 2 2 2 1] [1 1 2 9] [2 3 2]
-                          [5 5] [1 11 2 1] [5 4 4] [15 2 2] [18 6]]
-                 :down   [[3 3 3 3 4] [2 2 1 2 2 3] [1 2 3 2 1 3] [1 1 2 2 1 1 3] [2 1 2 1 1 1 1 3]
-                          [1 1 1 2 1 2 1 2 2] [1 1 1 1 2 1 1 1 2] [1 3 2 6 1 2] [2 1 1 1 1 1 1 2] [1 4 5 3 1 2]
-                          [3 1 2 1 2 2 1 1 2] [1 3 2 2 1 2] [4 1 4 2 1 2] [2 1 4 1 2] [4 4 1 2]
-                          [1 1 3 2 2 1] [1 2 2 1 1 1 1] [1 2 4 1 1 1 1] [2 6 3 1 2] [1 1 4 1 3 1 1 2]
-                          [1 5 1 1 7 1] [1 2 2 1 1 5 1 1] [4 2 2 1 1 1 3] [4 3 2 2 1 5] [2 8 2 1 1]]}))
-
-(def peter (initialise-known
-             {:title "peter"
-              :origin "http://www.hanjie-star.com/picross/peter-20459.html"
-              :across [[1] [2] [2] [1 2] [4 3]
-                       [8 3] [4 1 5 3] [3 2 2 6 4] [2 1 2 5 2] [1 1 1 1 6]
-                       [2 1 8] [1 4 1 3] [1 7 2] [1 1 1] [1 2 1]
-                       [1 1 2] [2 1 1 1 2] [2 2 3] [2 2 1] [2 1 1 1]
-                       [3 1 2 2] [1 7 2 4] [1 3 2 6] [3 5 5] [1 1 10 4]]
-              :down [[8] [3 4] [2 3] [2 2] [2 2 1]
-                     [2 1 1 1] [3 4] [2 1 3 4] [3 3 2 2 1] [3 2 1 1 1]
-                     [2 1 1 1 1] [2 1 1 1] [3 1 1] [2 1 1] [2 1 1 1 2]
-                     [3 3 1 2] [6 4 3] [11 4] [4 1 2] [3 1 1 1]
-                     [3 2 2] [4 1 4] [5 2 4] [7 4 5] [8 2 6]]}))
-
-(def snake (initialise-known
-             {:title "snake"
-              :origin "http://www.hanjie-star.com/picross/snake-20523.html"
-              :across [[12 12] [1 1 1 1] [1 10 10 1] [1 1 1 1] [1 1 17 1 1]
-                       [1 1 1 1 1 1] [1 1 1 9 3 1 1 1] [1 1 1 1 1 1 1 1 1 1] [1 1 1 1 5 1 1 1 1 1 1] [1 1 1 1 1 1 1 1 1 1 1 1]
-                       [1 1 1 1 1 1 1 3 1 1 1 1] [3 3 1 1 1 1 1 3] [1 1 5 1 1] [5 3 1 1 1 1 3] [1 1 1 3 1 1 1 1 1]
-                       [3 1 1 1 3 3 1 1 1 1] [1 1 1 1 1 1 1 1] [1 1 1 13 1 1 1] [1 1 1 1 1 1] [1 1 17 1 1]
-                       [1 1 1 1] [1 1 1 1] [1 10 10 1] [1 1 1 1] [12 12]]
-              :down [[12 1 10] [1 1 1 1 1] [1 10 1 8 1] [1 1 1 1 1] [1 1 8 7 1 1]
-                     [1 1 1 1 1 1 1] [1 1 1 6 5 1 1 1] [1 1 1 1 1 1 1 1 1] [1 1 1 1 6 1 1 1 1 1] [1 1 1 1 1 1 1 1 1]
-                     [1 1 1 1 1 6 1 1 1 1] [3 1 1 1 1 1 1 3] [1 1 5 2 1 1] [3 1 1 1 1 1 1 3] [1 1 1 5 1 2 1 1 1 1]
-                     [1 1 1 1 1 1 1 1 1 1] [1 1 1 5 4 1 1 1 1] [1 1 1 1 1 1 1 1] [1 1 1 12 1 1 1] [1 1 1 1 1 1]
-                     [1 1 16 1 1] [1 1 1 1] [1 10 10 1] [1 1 1 1] [12 12]]
-              }))
-
-(def bug (initialise-known
-           {:title  "bug"
-            :origin "puzzler magazine; no 210 pg 6"
-            :across [[1] [1 1 1] [2 6 3] [2 2] [1 1 2 2]
-                     [1 4 2 1 1] [2 2 1] [12] [2 2 1] [1 4 2 1 1]
-                     [1 1 2 1] [3 2] [1 8] [1 3] [1 1]]
-            :down [[2 2] [1 1] [2 5 1] [1 1 1 1 1] [9]
-                   [1 2 5 2] [2 1 1 1] [1 2 1 2 2] [1 2 1 2 1] [1 1 1]
-                   [1 1 1 1 1] [1 1 1] [3 1 3] [1 8 1] [2 2]]}))
-
-(def young-love (initialise-known
-                  {:title "young-love"
-                   :origin "puzzler hanjie magazine; no210 pg 20"
-                   :across [[2 3 3 2] [1 2 1] [2 1 1] [3 1 1 1 1 1 1] [1 4]
-                            [1 2] [2 3] [1 1 1 5] [1 1 4 3] [2 12]
-                            [5 6 3] [1 17] [3 15] [1 1 5 4] [3 7]
-                            [1 1 1 5 1] [1 3 1] [1 1 2 2 1] [1 10 1] [1 1 2 1]]
-                   :down [[1 3] [1 1 1 1] [2 4 1 1] [1 2 1 1 1 1] [1 2 2 2 3]
-                          [3 3 1 2] [1 3 2 2] [1 4 1] [1 1 5 1] [1 1 3 3 1 1]
-                          [2 11 1] [15 2] [1 1 2 10] [4 10 1] [5 3 1]
-                          [1 8 2] [1 4 1] [1 5 1] [5 4] [1 3]]}))
-
-(def moustache (initialise-known
-                 {:title "moustache"
-                  :origin "puzzler hanjir magazine; no 210 pg 20"
-                  :across [[16 1] [1 1 2 3] [1 2 1 1 3 1 3 6] [1 4 4 2 3 7] [1 1 10 2 3 3]
-                           [1 3 1 3 1 2 2 2 2] [1 1 1 5 2 1] [16 2 2 2 2] [2 3 3] [6 3 7]
-                           [2 3 3 6] [3 7 1 2 3] [3 3 6 1] [2 3 1 4 1] [2 3 6 1]
-                           [1 1 1 1 2 4 1] [1 6 2 1 2 1 2] [8 2 1 2 2 1 2] [8 2 2 2 1 6] [1 5 4 2 1 2 1]
-                           [2 5 2 3 1] [3 4 1 3 1] [8 2 1] [7 2 1] [3 1 1 1]
-                           [1 9 2] [3 1 2 1 1 1 1 1] [10 4 1 2 4] [2 6 2 5 4] [3 1 9 3 5]]
-                  :down [[9 5] [8 4 2 3 4] [1 1 2 3 4 2 1] [1 1 1 1 2 4 4 1] [1 2 2 2 2 5 4 2]
-                         [1 1 1 1 1 3 8 5] [1 2 1 1 1 13 1 2] [1 3 1 1 2 8 1 2] [1 1 1 1 1 6 3] [1 4 1 3 5]
-                         [1 2 1 2 3 2 1] [1 2 1 2 6 1 1] [1 4 1 2 1 2 2 1 1] [1 1 2 1 1 1 3 1 1] [1 1 2 1 2 1 1 1]
-                         [1 2 1 1 2 1] [8 1 1 2] [6 3] [1] [7 6]
-                         [9 8 1] [3 1 3 2 2 2] [2 5 2 6 2 2] [7 1 1 1 3] [3 3 5 3]
-                         [2 3 2 4 1 1] [3 3 3 8 3] [4 4 2 2 4] [11 1 3] [1 4 4 4 2 2 4]]}))
-
-(def ye-eds-special (initialise-known
-                      {:title "ye ed's special"
-                       :origin "puzzler hanjie magazine; no 210 page 5"
-                       :across [[7 4 4] [2 3 2 3 2 3 1] [2 4 2 4 3] [2 3 2 3] [1 2 2 2 4]
-                                [2 2 3 2 4] [1 4 2 3 4] [2 2 2 2 3 4] [1 1 2 1 2 4] [1 2 3 1 2 3]
-                                [1 1 5 2 9] [1 2 5 1 8] [3 2 5 1 7] [2 1 7 2 7] [2 8 2 8]
-                                [2 5 2 6] [2 9 3 3] [8 5] [6 2 12] [4 3 12]
-                                [3 1 3] [4 2 6] [6 2 6] [3 4 4 5] [4 5 2 4]
-                                [2 6 2 4] [2 9 6] [1 9 5] [1 4 4] [10 3]]
-                       :down [[8 4] [3 4 2 1] [3 2 2 2 3] [3 3 2 1 4] [3 3 2 1 4]
-                              [1 2 2 3 2 4] [1 2 1 1 4 1 2 1] [1 3 8 2 3 1] [1 2 2 7 1 4 1] [1 1 2 7 7 1]
-                              [2 2 2 7 9] [2 2 8 9] [2 1 6 1 8] [1 2 4 1] [2 2 2 2]
-                              [2 4 2 4] [1 2 3 2] [2 5 4 2] [3 4 5 1] [3 3 6 1]
-                              [5 5 2] [1 3 1 1 2 2 2] [2 2 2 2 2 2] [1 6 2 3 2] [2 6 2 8]
-                              [2 7 2 8] [2 5 7 2 8] [1 15 7] [1 14] [13]]}))
-
-(def owl (initialise-known
-           {:title  "owl"
-            :origin "puzzler hanjie magazine; no 210 page 28"
-            :across [[2 4 6 3] [6 2 4 2] [3 1 3 2 2] [2 2 2 2 1 4] [3 5 1 1 2 1]
-                     [3 2 3 3] [1 2 4 5 2] [4 1 2 2 2] [2 2 1 3 1 1] [3 2 1 4 3 1]
-                     [1 1 2 1 4 2 2] [5 5 1 2] [2 3 4 3] [1 3 1 2 4] [3 1 2 2 3]
-                     [1 2 6 1 3] [2 1 2 2 1 3 1] [3 2 2 1 3] [1 1 1 2 4 3] [2 6 1 2 2 1]
-                     [1 3 2 2 2 2] [1 6 1 3 3] [5 1 1 2 1] [3 3 2 1 4 1] [3 5 1 4]
-                     [4 1 3 3] [1 2 1 1 1] [1 1 1 1 2 2 2] [2 4 1 2 2 4] [3 2 6 2 2]]
-            :down [[2 10 6 1 7] [2 3 3 4 2 2 4 2] [2 4 3 2 2 7 1] [4 3 3 2 4 2 1] [6 7 7 3]
-                   [2 3 2 2 2 6 2] [1 2 2 2 2 1 2 1] [1 4 2 1 1 4 2 1] [1 3 1 1 2 2 1 2] [1 1 1 2 4 2 1 1]
-                   [1 2 1 3 1 4 2 2] [4 1 4 2 5 1 3] [3 1 1 5 1 1 1 1 3 1] [4 1 2 1 4 1 2 1] [2 1 1 3 5 3]
-                   [1 2 2 2 3 2 2 2 1] [4 1 1 2 4 4 1] [2 3 2 17] [1 2 3 6 1 2 2 3] [1 1 10 2 1 3 2]]}))
 
 (defn -main
   "I don't do a whole lot ... yet."
