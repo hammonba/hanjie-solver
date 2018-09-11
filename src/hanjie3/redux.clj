@@ -4,7 +4,7 @@
             [clojure.core.reducers :as r]
             [clojure.tools.logging :as log]
             [clojure.tools.trace :as trace])
-  (:import (clojure.lang Keyword PersistentQueue)
+  (:import (clojure.lang Keyword PersistentQueue Volatile)
            (java.util Arrays)))
 
 (set! *warn-on-reflection* true)
@@ -67,9 +67,8 @@
               (map :coll)
               internal-colls)))
 
-(def known-off #{:off})
-(def known-on #{:on})
-(def known-unknown #{:unk})
+(def known-off #(= 0 %))
+(def known-on #(= 1 %))
 
 (defn build-progressive-filter-fn
   "return filter fn the will consume space counts as they become available
@@ -97,28 +96,48 @@
   "build a line of pixels out of spaces and blocks.
   This gets called alot, so we use mutable java arrays for performance"
   [length block-counts space-counts]
-  (let [^objects pxarr (make-array Keyword length)]
+  (let [^booleans pxarr (boolean-array length)]
     (loop [idx 0 [^int spc & spcs] space-counts [^int blk & blks] block-counts]
-      (Arrays/fill pxarr idx (+ idx spc) :off)
-      (Arrays/fill pxarr (+ idx spc) ^int (+ idx spc (or blk 0)) :on)
+      (Arrays/fill pxarr idx (+ idx spc) false)
+      (Arrays/fill pxarr (+ idx spc) ^int (+ idx spc (or blk 0)) true)
       (if (nil? spcs)
         pxarr
         (recur (+ idx spc blk) spcs blks)))))
 
-(defn accumulate-uncertainty
-  "keeps the pixels that everyone can agree on.
+#_(defn accumulate-uncertainty
+    "keeps the pixels that everyone can agree on.
   Any dissent results in :unk"
-  ([] nil)
-  ([certain] certain)
-  ([^objects certain ^objects pixelline]
-   (if (nil? certain)
-     pixelline
-     (let [acc (aclone certain)]
-       (doseq [idx (range (alength acc))]
-         (when (not= (aget certain idx)
-                     (aget pixelline idx))
-           (aset acc idx :unk)))
-       acc))))
+    ([] nil)
+    ([certain] certain)
+    ([^objects certain ^objects pixelline]
+     (if (nil? certain)
+       pixelline
+       (let [acc (aclone certain)]
+         (doseq [idx (range (alength acc))]
+           (when (not= (aget certain idx)
+                       (aget pixelline idx))
+             (aset acc idx :unk)))
+         acc))))
+
+(defrecord acc-pixel [^int on ^int off ^int unk])
+(defrecord PixelAccumulator [^ints on ^Volatile counter])
+
+(defn new-pixel-accumulator [len]
+  (->PixelAccumulator (int-array len)
+                      (volatile! 0)))
+(defn inc-arrelement
+  [^ints arr idx]
+  (aset ^ints arr idx (inc (aget ^ints arr idx)))
+  arr)
+
+(defn accumulate-pixels
+  ([pixels] pixels)
+  ([{:keys [on ^Volatile counter] :as acc} ^booleans pixelline]
+   (doseq [idx (range (alength pixelline))]
+          (if (aget pixelline idx)
+            (inc-arrelement on idx)))
+   (vswap! counter inc)
+   acc))
 
 (defn pixel-certainty
   ":unk gets overwritten with a definite value
@@ -126,10 +145,15 @@
    :contradictions are bad ..."
   [px1 px2]
   (cond
-    (= :unk px1) px2
-    (= :unk px2) px1
-    (= px1 px2) px1
-    :else :contradiction))
+   (= :contradiction px1) :contradiction
+   (= :contradiction px2) :contradiction
+   (and (= 0 px1) (= 1 px2))  :contradiction
+   (and (= 1 px1) (= 0 px2))  :contradiction
+   (= 0 px1) 0
+   (= 0 px2) 0
+   (= 1 px1) 1
+   (= 1 px2) 1
+   :else (/ (+ px1 px2) 2)))
 
 (defn accumulate-certainty
   "replace :unks with actual values"
@@ -149,14 +173,14 @@
 (defn infer-knownpixels-for-line
   "crawls the possible gap sizes, accumulating pixels that remain constant for all possibilities."
   [{:keys [length known-pixels blocks gap-count gap-pixelcount]}]
-  (let [counter (volatile! 0)
-        start-time (System/currentTimeMillis)]
-    (transduce (comp (map #(build-pixelline length blocks %))
-                     (map #(do (vswap! counter inc) %)))
-               (completing accumulate-uncertainty
-                           (fn [kp] {:known-pixels (vec kp)
-                                     :search-space @counter
-                                     :elapsed-millis (- (System/currentTimeMillis) start-time)}))
+  (let [start-time (System/currentTimeMillis)]
+    (transduce (map #(build-pixelline length blocks %))
+               (completing accumulate-pixels
+                           (fn [kp] (if (zero? @(:counter kp))
+                                      nil
+                                      {:known-pixels (mapv #(/ % @(:counter kp)) (:on kp))
+                                       :elapsed-millis (- (System/currentTimeMillis) start-time)})))
+               (new-pixel-accumulator length)
                (multi-permute-eduction (build-progressive-filter-fn known-pixels blocks)
                                        gap-pixelcount
                                        gap-count))))
@@ -210,7 +234,7 @@
 (defn init-certainty
   "initially everything is unknown"
   [{:keys [length]}]
-  (vec (repeat length :unk)))
+  (vec (repeat length 1/2)))
 
 (defn build-line-details
   [orientation length index blocks]
@@ -282,8 +306,8 @@
 (defn choose-lines-to-process
   [{:keys [ranks files] :as h}]
   (let [ss (sort-lines-by-cmp compute-unknowns-score h)
-        #_(comment ss (take (min (quot (count ss) 2) 5) ss))
-        ]
+        #_(comment ss (take (min (quot (count ss) 2) 5) ss))]
+
     (random-sample 0.5 ss)))
 
 (defn shuffle-lines
@@ -303,17 +327,61 @@
   (mapv :known-pixels lines))
 
 (def pprint-lookup
-  {:on \O
-   :off \space
-   :unk \?
+  {1 \O
+   0 \space
    :contradiction \X})
+
+(defrecord MinMaxRecord [index orientation minval minidx maxval maxidx])
+
+(defn minmax-pixels-for-line
+      [{:keys [index orientation known-pixels]}]
+      (reduce-kv (fn [{:keys [minval minidx maxval maxidx] :as acc} idx v]
+                     (cond
+                      (= :contradiction v) acc
+                      (= 0 v) acc
+                      (= 1 v) acc
+                      (> v maxval) (assoc acc :maxval v :maxidx idx)
+                      (< v maxval) (assoc acc :minval v :minidx idx)
+                      :else acc))
+                 (->MinMaxRecord index orientation 1/2 -1 1/2 -1)
+                 known-pixels))
+
+(defn choose-min-maxes-for-board
+      [{:keys [ranks files]}]
+      (let [mms (into (mapv minmax-pixels-for-line ranks)
+                      (mapv minmax-pixels-for-line files))]
+           {:mins (take 5 (sort-by :minval (filter (comp pos? :minidx) mms)))
+            :maxs (take 5 (sort-by :maxval (filter (comp pos? :maxidx) mms)))}))
+
+(defn sortby-closest-to-extremes
+      [{:keys [mins maxs]}]
+      (sort-by :distance
+               (into (map #(assoc % :distance (:minval %)
+                                  :extreme-val 0
+                                  :extreme-idx (:minidx %))
+                          mins)
+                     (map #(assoc % :distance (- 1 (:maxval %))
+                                  :extreme-val 1
+                                  :extreme-idx (:maxidx %))
+                          maxs))))
+
+(defn apply-extremes-guess
+      [h {:keys [orientation index extreme-idx extreme-val] :as guess}]
+      (println `(assoc-in h [~orientation ~index :known-pixels ~extreme-idx] ~extreme-val))
+      (when guess
+            (assoc-in h [orientation index :known-pixels extreme-idx] extreme-val)))
+
+(defn guess-and-apply
+      "make a guess at the most likely uncertain pixel and return board with it"
+      [h]
+      (apply-extremes-guess h (first (sortby-closest-to-extremes (choose-min-maxes-for-board h)))))
 
 (defn print-mtx
   [mtx]
   (let [sb (StringBuilder.)]
     (doseq [row mtx]
       (doseq [cell row]
-        (.append sb (get pprint-lookup cell)))
+        (.append sb (get pprint-lookup cell \?)))
       (.append sb \newline))
     (str sb)))
 
@@ -356,6 +424,48 @@
   [coll]
   (reduce (fn [c _] (inc c)) 0 coll))
 
+
+(def pprint-hanjie
+  (comp println print-mtx build-mtx :files))
+
+(defn pixel-ratio-eqv?
+      "two ratios are equivalent neither is zero or one without the other"
+      [[r1 r2]]
+      (and (= (= 0 r1) (= 0 r2))
+           (= (= 1 r1) (= 1 r2))))
+
+(defn stalled-line?
+      [[l1 l2]]
+      (every? pixel-ratio-eqv? (map vector l1 l2)))
+
+(defn stalled-hanje?
+      [h1 h2]
+      (when h1
+            (every? stalled-line?
+                    (map vector
+                         (map :known-pixels (:files h1))
+                         (map :known-pixels (:files h2))))))
+
+(defn iterate-until-stalled
+      [h]
+      (loop [prevh nil h h]
+            (if (stalled-hanje? prevh h)
+              h
+              (recur h (one-step h)))))
+
+(defn iterate-then-guess
+      [h]
+      (loop [h1 h]
+            (pprint-hanjie h1)
+            (def last-iter h1)
+
+            (let [h2 (iterate-until-stalled h1)
+                  h3 (guess-and-apply h2)]
+                 (if (nil? h3)
+                   h2
+                   (recur h3)))))
+
+
 (defn solve
   [n h]
   (loop [n n h h]
@@ -373,3 +483,6 @@
 
 (comment (hr/print-mtx (hr/build-mtx (:files (time (nth (iterate hr/one-step (hr/init-redux hc/ye-eds-special)) 100)))))
          "Elapsed time: 44572.947356 msecs")
+
+(comment (hr/pprint-hanjie (hr/iterate-then-guess (hr/init-redux ex/peter))))
+(comment (hr/pprint-hanjie (hr/iterate-then-guess (hr/init-redux ex/hedwig))))
