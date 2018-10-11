@@ -73,7 +73,12 @@
 (defn build-progressive-filter-fn
   "return filter fn the will consume space counts as they become available
   and either return the next filter fn or will return nil.
-  Nil means that the filter rejects this space-count"
+  Nil means that the filter rejects this space-count
+  - if any of the proposed spaces are know to be 'on' then reject
+  - if any of the subsequent block spaces are known to be 'off' then reject
+  - if the pixel immediately following this 'on' block is also 'on' then reject; the block will be too long
+  - if we run out of pixels to fulfill the proposed space & block then reject
+  - otherwise return a filter function that will consider the next gap/block"
   [known-pixels [bc & block-counts]]
   (fn [space-count]
     (let [[space-pxs l8-pxs] (split-at space-count known-pixels)]
@@ -210,18 +215,19 @@
         lines-into
         (transpose (mapv :known-pixels lines-from))))
 
-(defn count-pixels
-  [pred known-pixels]
+(defn count-reducible
+  "lazily count the number of reducible values that pass the predicate"
+  [pred reduciblel]
   (transduce (filter pred)
              (fn ([c] c)
                ([c _] (inc c)))
              0
-             known-pixels))
+             reduciblel))
 
 (defn compute-unknowns-score
   "rough guess at how easy it willl be to calculate better information"
   [{:keys [length known-pixels gap-count gap-pixelcount]}]
-  (let [unk-count (count-pixels #{:unk} known-pixels)]
+  (let [unk-count (count-reducible #{:unk} known-pixels)]
     (if (zero? unk-count)
       -1
       (+ gap-count (- length unk-count)))))
@@ -232,11 +238,12 @@
            (compute-unknowns-score h2)))
 
 (defn init-certainty
-  "initially everything is unknown"
+  "initially everything is unknown; represented by ratio of 1/2"
   [{:keys [length]}]
   (vec (repeat length 1/2)))
 
 (defn build-line-details
+  "creates everything that we want to know about a line in order to process it"
   [orientation length index blocks]
   (as-> {:length length
          :blocks blocks
@@ -250,6 +257,7 @@
         (assoc <az-> :score (compute-unknowns-score <az->))))
 
 (defn init-redux
+  "creates our processing data structure from down and across vectors of block"
   [{:keys [down across] :as h}]
   (-> h
       (select-keys [:title :origin])
@@ -287,12 +295,17 @@
 
 
 (defn parallelize-xform
+  "creates a transduction of future calls, followed by future derefs
+   uses a lagging transducer to control the quantity of un-realised futures
+   that may be running simultaneously"
   [max-tasks-inflight]
   (comp (map future-call)
         (build-lagging-transducer max-tasks-inflight)
         (map deref)))
 
 (defn update-many-lines
+  "applies update-line to all the lines, using clojure futures for simultaneous
+  processing"
   [lines]
   (time (into []
               (comp (map (fn [l] #(update-line l)))
@@ -334,6 +347,7 @@
 (defrecord MinMaxRecord [index orientation minval minidx maxval maxidx])
 
 (defn minmax-pixels-for-line
+  "pick out the highest and the lowest value excluding 0 and 1"
       [{:keys [index orientation known-pixels]}]
       (reduce-kv (fn [{:keys [minval minidx maxval maxidx] :as acc} idx v]
                      (cond
@@ -347,6 +361,7 @@
                  known-pixels))
 
 (defn choose-min-maxes-for-board
+  "choose the 5 most likely ons and the 5 most likely offs"
       [{:keys [ranks files]}]
       (let [mms (into (mapv minmax-pixels-for-line ranks)
                       (mapv minmax-pixels-for-line files))]
@@ -354,6 +369,7 @@
             :maxs (take 5 (sort-by :maxval (filter (comp pos? :maxidx) mms)))}))
 
 (defn sortby-closest-to-extremes
+  "sort by distance from 0 or 1"
       [{:keys [mins maxs]}]
       (sort-by :distance
                (into (map #(assoc % :distance (:minval %)
@@ -367,7 +383,7 @@
 
 (defn apply-extremes-guess
       [h {:keys [orientation index extreme-idx extreme-val] :as guess}]
-      (println `(assoc-in h [~orientation ~index :known-pixels ~extreme-idx] ~extreme-val))
+      #_(println `(assoc-in h [~orientation ~index :known-pixels ~extreme-idx] ~extreme-val))
       (when guess
             (assoc-in h [orientation index :known-pixels extreme-idx] extreme-val)))
 
@@ -447,6 +463,9 @@
                          (map :known-pixels (:files h2))))))
 
 (defn iterate-until-stalled
+  "A perfectly formed hanjie will not stall until it is solved.
+  A less perfectt hanjie will stall before then
+  (and we will have to take a guess at the most likely on/off pixel)"
       [h]
       (loop [prevh nil h h]
             (if (stalled-hanje? prevh h)
@@ -456,8 +475,7 @@
 (defn iterate-then-guess
       [h]
       (loop [h1 h]
-            (pprint-hanjie h1)
-            (def last-iter h1)
+            #_(pprint-hanjie h1)
 
             (let [h2 (iterate-until-stalled h1)
                   h3 (guess-and-apply h2)]
