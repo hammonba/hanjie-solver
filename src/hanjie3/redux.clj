@@ -275,9 +275,9 @@
         ([] (rf))
         ([acc] (reduce rf acc @qv))
         ([acc v]
+         (vswap! qv conj v)
          (if (< (count @qv) n)
-           (do (vswap! qv conj v)
-               acc)
+           acc
            (let [h (peek @qv)]
              (vswap! qv pop)
              (rf acc h))))))))
@@ -300,7 +300,7 @@
    that may be running simultaneously"
   [max-tasks-inflight]
   (comp (map future-call)
-        (build-lagging-transducer max-tasks-inflight)
+        (build-lagging-transducer 16)
         (map deref)))
 
 (defn update-many-lines
